@@ -125,11 +125,26 @@ int main(int argc, char **argv)
         // ==================== 第八步：发送 HTTP 响应 ====================
         // 根据请求路径返回不同的响应：
         // - 路径为 "/" 时返回 200 OK
+        // - 路径以 "/echo/" 开头时返回 200 OK，响应体为路径中的字符串
         // - 其他路径返回 404 Not Found
         std::string response;
         if (path == "/")
         {
             response = "HTTP/1.1 200 OK\r\n\r\n";
+        }
+        else if (path.substr(0, 6) == "/echo/")
+        {
+            // 提取 /echo/ 后面的字符串作为响应体
+            // 例如: /echo/abc -> abc
+            std::string echo_str = path.substr(6);
+            // 构建响应:
+            // - Content-Type: text/plain 表示响应体是纯文本
+            // - Content-Length: 响应体的字节长度
+            response = "HTTP/1.1 200 OK\r\n";
+            response += "Content-Type: text/plain\r\n";
+            response += "Content-Length: " + std::to_string(echo_str.size()) + "\r\n";
+            response += "\r\n";  // 头部结束
+            response += echo_str;  // 响应体
         }
         else
         {
