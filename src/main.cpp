@@ -126,6 +126,7 @@ int main(int argc, char **argv)
         // 根据请求路径返回不同的响应：
         // - 路径为 "/" 时返回 200 OK
         // - 路径以 "/echo/" 开头时返回 200 OK，响应体为路径中的字符串
+        // - 路径为 "/user-agent" 时返回 200 OK，响应体为 User-Agent 头的值
         // - 其他路径返回 404 Not Found
         std::string response;
         if (path == "/")
@@ -145,6 +146,30 @@ int main(int argc, char **argv)
             response += "Content-Length: " + std::to_string(echo_str.size()) + "\r\n";
             response += "\r\n";  // 头部结束
             response += echo_str;  // 响应体
+        }
+        else if (path == "/user-agent")
+        {
+            // 从请求头中提取 User-Agent 的值
+            // 请求头格式: "User-Agent: value\r\n"
+            // 注意: 头名称不区分大小写
+            std::string user_agent;
+            std::string ua_header = "User-Agent: ";
+            size_t ua_pos = request.find(ua_header);
+            if (ua_pos != std::string::npos)
+            {
+                size_t value_start = ua_pos + ua_header.size();
+                size_t value_end = request.find("\r\n", value_start);
+                if (value_end != std::string::npos)
+                {
+                    user_agent = request.substr(value_start, value_end - value_start);
+                }
+            }
+            // 构建响应
+            response = "HTTP/1.1 200 OK\r\n";
+            response += "Content-Type: text/plain\r\n";
+            response += "Content-Length: " + std::to_string(user_agent.size()) + "\r\n";
+            response += "\r\n";
+            response += user_agent;
         }
         else
         {
