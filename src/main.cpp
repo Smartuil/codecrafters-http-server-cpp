@@ -30,21 +30,23 @@ void handle_client(int client_fd)
     std::string request(buffer);
     std::cout << "Received request:\n" << request << std::endl;
 
-    // 解析请求行，提取 URL 路径
+    // 解析请求行，提取 HTTP 方法和 URL 路径
     // 请求行格式: "METHOD /path HTTP/1.1"
     // 找到第一个空格后的位置就是路径开始
     // 找到第二个空格的位置就是路径结束
+    std::string method;
     std::string path;
     size_t method_end = request.find(' ');
     if (method_end != std::string::npos)
     {
+        method = request.substr(0, method_end);
         size_t path_end = request.find(' ', method_end + 1);
         if (path_end != std::string::npos)
         {
             path = request.substr(method_end + 1, path_end - method_end - 1);
         }
     }
-    std::cout << "Extracted path: " << path << std::endl;
+    std::cout << "Method: " << method << ", Path: " << path << std::endl;
 
     // ==================== 发送 HTTP 响应 ====================
     // 根据请求路径返回不同的响应：
@@ -103,28 +105,75 @@ void handle_client(int client_fd)
         // 构建完整的文件路径
         std::string filepath = g_directory + filename;
         
-        // 尝试打开文件
-        std::ifstream file(filepath, std::ios::binary);
-        if (file.is_open())
+        if (method == "GET")
         {
-            // 文件存在，读取文件内容
-            std::stringstream file_buffer;
-            file_buffer << file.rdbuf();
-            std::string file_content = file_buffer.str();
-            file.close();
+            // GET 请求：读取文件并返回内容
+            std::ifstream file(filepath, std::ios::binary);
+            if (file.is_open())
+            {
+                // 文件存在，读取文件内容
+                std::stringstream file_buffer;
+                file_buffer << file.rdbuf();
+                std::string file_content = file_buffer.str();
+                file.close();
+                
+                // 构建 200 响应
+                // Content-Type: application/octet-stream 表示二进制文件
+                response = "HTTP/1.1 200 OK\r\n";
+                response += "Content-Type: application/octet-stream\r\n";
+                response += "Content-Length: " + std::to_string(file_content.size()) + "\r\n";
+                response += "\r\n";
+                response += file_content;
+            }
+            else
+            {
+                // 文件不存在，返回 404
+                response = "HTTP/1.1 404 Not Found\r\n\r\n";
+            }
+        }
+        else if (method == "POST")
+        {
+            // POST 请求：将请求体内容写入文件
+            // 从请求头中提取 Content-Length
+            std::string content_length_header = "Content-Length: ";
+            size_t cl_pos = request.find(content_length_header);
+            int content_length = 0;
+            if (cl_pos != std::string::npos)
+            {
+                size_t value_start = cl_pos + content_length_header.size();
+                size_t value_end = request.find("\r\n", value_start);
+                if (value_end != std::string::npos)
+                {
+                    content_length = std::stoi(request.substr(value_start, value_end - value_start));
+                }
+            }
             
-            // 构建 200 响应
-            // Content-Type: application/octet-stream 表示二进制文件
-            response = "HTTP/1.1 200 OK\r\n";
-            response += "Content-Type: application/octet-stream\r\n";
-            response += "Content-Length: " + std::to_string(file_content.size()) + "\r\n";
-            response += "\r\n";
-            response += file_content;
+            // 提取请求体（在 \r\n\r\n 之后的内容）
+            std::string body;
+            size_t body_start = request.find("\r\n\r\n");
+            if (body_start != std::string::npos)
+            {
+                body = request.substr(body_start + 4, content_length);
+            }
+            
+            // 将请求体写入文件
+            std::ofstream file(filepath, std::ios::binary);
+            if (file.is_open())
+            {
+                file << body;
+                file.close();
+                // 返回 201 Created 响应
+                response = "HTTP/1.1 201 Created\r\n\r\n";
+            }
+            else
+            {
+                // 无法创建文件，返回 500 错误
+                response = "HTTP/1.1 500 Internal Server Error\r\n\r\n";
+            }
         }
         else
         {
-            // 文件不存在，返回 404
-            response = "HTTP/1.1 404 Not Found\r\n\r\n";
+            response = "HTTP/1.1 405 Method Not Allowed\r\n\r\n";
         }
     }
     else
