@@ -79,33 +79,68 @@ int main(int argc, char **argv)
 
     std::cout << "Waiting for a client to connect...\n";
 
-    // accept() 阻塞等待客户端连接
-    // 当有客户端连接时，返回一个新的套接字文件描述符用于与该客户端通信
-    // 原来的 server_fd 继续用于监听新的连接
-    // client_addr: 用于存储连接的客户端地址信息
-    int client_fd = accept(server_fd, (struct sockaddr *)&client_addr, (socklen_t *)&client_addr_len);
-    if (client_fd < 0)
+    // 使用循环处理多个客户端连接
+    while (true)
     {
-        std::cerr << "accept failed\n";
-        return 1;
+        // accept() 阻塞等待客户端连接
+        // 当有客户端连接时，返回一个新的套接字文件描述符用于与该客户端通信
+        // 原来的 server_fd 继续用于监听新的连接
+        // client_addr: 用于存储连接的客户端地址信息
+        int client_fd = accept(server_fd, (struct sockaddr *)&client_addr, (socklen_t *)&client_addr_len);
+        if (client_fd < 0)
+        {
+            std::cerr << "accept failed\n";
+            continue;
+        }
+        std::cout << "Client connected\n";
+
+        // ==================== 第七步：读取并解析 HTTP 请求 ====================
+        // HTTP 请求由三部分组成，每部分以 CRLF (\r\n) 分隔：
+        // 1. 请求行 (Request line): 方法 + 请求目标(URL路径) + HTTP版本
+        // 2. 请求头 (Headers): 零个或多个，每个以 CRLF 结尾
+        // 3. 请求体 (Body): 可选的请求内容
+        //
+        // 示例: "GET /index.html HTTP/1.1\r\nHost: localhost:4221\r\n\r\n"
+        char buffer[1024] = {0};
+        recv(client_fd, buffer, sizeof(buffer) - 1, 0);
+        std::string request(buffer);
+        std::cout << "Received request:\n" << request << std::endl;
+
+        // 解析请求行，提取 URL 路径
+        // 请求行格式: "METHOD /path HTTP/1.1"
+        // 找到第一个空格后的位置就是路径开始
+        // 找到第二个空格的位置就是路径结束
+        std::string path;
+        size_t method_end = request.find(' ');
+        if (method_end != std::string::npos)
+        {
+            size_t path_end = request.find(' ', method_end + 1);
+            if (path_end != std::string::npos)
+            {
+                path = request.substr(method_end + 1, path_end - method_end - 1);
+            }
+        }
+        std::cout << "Extracted path: " << path << std::endl;
+
+        // ==================== 第八步：发送 HTTP 响应 ====================
+        // 根据请求路径返回不同的响应：
+        // - 路径为 "/" 时返回 200 OK
+        // - 其他路径返回 404 Not Found
+        std::string response;
+        if (path == "/")
+        {
+            response = "HTTP/1.1 200 OK\r\n\r\n";
+        }
+        else
+        {
+            response = "HTTP/1.1 404 Not Found\r\n\r\n";
+        }
+        send(client_fd, response.c_str(), response.size(), 0);
+
+        // ==================== 第九步：关闭客户端套接字 ====================
+        close(client_fd);
     }
-    std::cout << "Client connected\n";
 
-    // ==================== 第七步：发送 HTTP 响应 ====================
-    // HTTP 响应由三部分组成，每部分以 CRLF (\r\n) 分隔：
-    // 1. 状态行 (Status line): HTTP版本 + 状态码 + 原因短语
-    // 2. 响应头 (Headers): 零个或多个，每个以 CRLF 结尾
-    // 3. 响应体 (Body): 可选的响应内容
-    // 
-    // 本阶段只需返回一个简单的 200 OK 响应：
-    // "HTTP/1.1 200 OK\r\n\r\n"
-    // 第一个 \r\n 标记状态行结束，第二个 \r\n 标记头部结束（头部为空）
-    std::string response = "HTTP/1.1 200 OK\r\n\r\n";
-    send(client_fd, response.c_str(), response.size(), 0);
-
-    // ==================== 第八步：关闭套接字 ====================
-    // 关闭客户端连接套接字
-    close(client_fd);
     // 关闭服务器监听套接字，释放资源
     close(server_fd);
 
