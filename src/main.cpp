@@ -7,7 +7,12 @@
 #include <sys/socket.h>
 #include <arpa/inet.h>
 #include <netdb.h>
-#include <thread>  // 用于多线程支持
+#include <thread>    // 用于多线程支持
+#include <fstream>   // 用于文件操作
+#include <sstream>   // 用于字符串流
+
+// 全局变量：存储文件目录路径
+std::string g_directory;
 
 // 处理单个客户端连接的函数
 // 将其抽取为独立函数，以便在新线程中执行
@@ -90,6 +95,38 @@ void handle_client(int client_fd)
         response += "\r\n";
         response += user_agent;
     }
+    else if (path.substr(0, 7) == "/files/")
+    {
+        // 处理文件请求: /files/{filename}
+        // 从路径中提取文件名
+        std::string filename = path.substr(7);
+        // 构建完整的文件路径
+        std::string filepath = g_directory + filename;
+        
+        // 尝试打开文件
+        std::ifstream file(filepath, std::ios::binary);
+        if (file.is_open())
+        {
+            // 文件存在，读取文件内容
+            std::stringstream file_buffer;
+            file_buffer << file.rdbuf();
+            std::string file_content = file_buffer.str();
+            file.close();
+            
+            // 构建 200 响应
+            // Content-Type: application/octet-stream 表示二进制文件
+            response = "HTTP/1.1 200 OK\r\n";
+            response += "Content-Type: application/octet-stream\r\n";
+            response += "Content-Length: " + std::to_string(file_content.size()) + "\r\n";
+            response += "\r\n";
+            response += file_content;
+        }
+        else
+        {
+            // 文件不存在，返回 404
+            response = "HTTP/1.1 404 Not Found\r\n\r\n";
+        }
+    }
     else
     {
         response = "HTTP/1.1 404 Not Found\r\n\r\n";
@@ -107,8 +144,26 @@ int main(int argc, char **argv)
     std::cout << std::unitbuf;
     std::cerr << std::unitbuf;
 
+    // 解析命令行参数
+    // 支持 --directory 参数指定文件存储目录
+    // 例如: ./your_program.sh --directory /tmp/
+    for (int i = 1; i < argc; i++)
+    {
+        if (std::string(argv[i]) == "--directory" && i + 1 < argc)
+        {
+            g_directory = argv[i + 1];
+            // 确保目录路径以 / 结尾
+            if (!g_directory.empty() && g_directory.back() != '/')
+            {
+                g_directory += '/';
+            }
+            break;
+        }
+    }
+
     // 调试日志，运行测试时会显示
     std::cout << "Logs from your program will appear here!\n";
+    std::cout << "Directory: " << g_directory << std::endl;
 
     // ==================== 第一步：创建服务器套接字 ====================
     // socket() 函数创建一个套接字
