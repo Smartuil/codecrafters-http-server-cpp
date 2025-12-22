@@ -83,11 +83,30 @@ int main(int argc, char **argv)
     // 当有客户端连接时，返回一个新的套接字文件描述符用于与该客户端通信
     // 原来的 server_fd 继续用于监听新的连接
     // client_addr: 用于存储连接的客户端地址信息
-    accept(server_fd, (struct sockaddr *)&client_addr, (socklen_t *)&client_addr_len);
+    int client_fd = accept(server_fd, (struct sockaddr *)&client_addr, (socklen_t *)&client_addr_len);
+    if (client_fd < 0)
+    {
+        std::cerr << "accept failed\n";
+        return 1;
+    }
     std::cout << "Client connected\n";
 
-    // ==================== 第七步：关闭服务器套接字 ====================
-    // 关闭套接字，释放资源
+    // ==================== 第七步：发送 HTTP 响应 ====================
+    // HTTP 响应由三部分组成，每部分以 CRLF (\r\n) 分隔：
+    // 1. 状态行 (Status line): HTTP版本 + 状态码 + 原因短语
+    // 2. 响应头 (Headers): 零个或多个，每个以 CRLF 结尾
+    // 3. 响应体 (Body): 可选的响应内容
+    // 
+    // 本阶段只需返回一个简单的 200 OK 响应：
+    // "HTTP/1.1 200 OK\r\n\r\n"
+    // 第一个 \r\n 标记状态行结束，第二个 \r\n 标记头部结束（头部为空）
+    std::string response = "HTTP/1.1 200 OK\r\n\r\n";
+    send(client_fd, response.c_str(), response.size(), 0);
+
+    // ==================== 第八步：关闭套接字 ====================
+    // 关闭客户端连接套接字
+    close(client_fd);
+    // 关闭服务器监听套接字，释放资源
     close(server_fd);
 
     return 0;
