@@ -7,6 +7,98 @@
 #include <sys/socket.h>
 #include <arpa/inet.h>
 #include <netdb.h>
+#include <thread>  // 用于多线程支持
+
+// 处理单个客户端连接的函数
+// 将其抽取为独立函数，以便在新线程中执行
+void handle_client(int client_fd)
+{
+    // ==================== 读取并解析 HTTP 请求 ====================
+    // HTTP 请求由三部分组成，每部分以 CRLF (\r\n) 分隔：
+    // 1. 请求行 (Request line): 方法 + 请求目标(URL路径) + HTTP版本
+    // 2. 请求头 (Headers): 零个或多个，每个以 CRLF 结尾
+    // 3. 请求体 (Body): 可选的请求内容
+    //
+    // 示例: "GET /index.html HTTP/1.1\r\nHost: localhost:4221\r\n\r\n"
+    char buffer[1024] = {0};
+    recv(client_fd, buffer, sizeof(buffer) - 1, 0);
+    std::string request(buffer);
+    std::cout << "Received request:\n" << request << std::endl;
+
+    // 解析请求行，提取 URL 路径
+    // 请求行格式: "METHOD /path HTTP/1.1"
+    // 找到第一个空格后的位置就是路径开始
+    // 找到第二个空格的位置就是路径结束
+    std::string path;
+    size_t method_end = request.find(' ');
+    if (method_end != std::string::npos)
+    {
+        size_t path_end = request.find(' ', method_end + 1);
+        if (path_end != std::string::npos)
+        {
+            path = request.substr(method_end + 1, path_end - method_end - 1);
+        }
+    }
+    std::cout << "Extracted path: " << path << std::endl;
+
+    // ==================== 发送 HTTP 响应 ====================
+    // 根据请求路径返回不同的响应：
+    // - 路径为 "/" 时返回 200 OK
+    // - 路径以 "/echo/" 开头时返回 200 OK，响应体为路径中的字符串
+    // - 路径为 "/user-agent" 时返回 200 OK，响应体为 User-Agent 头的值
+    // - 其他路径返回 404 Not Found
+    std::string response;
+    if (path == "/")
+    {
+        response = "HTTP/1.1 200 OK\r\n\r\n";
+    }
+    else if (path.substr(0, 6) == "/echo/")
+    {
+        // 提取 /echo/ 后面的字符串作为响应体
+        // 例如: /echo/abc -> abc
+        std::string echo_str = path.substr(6);
+        // 构建响应:
+        // - Content-Type: text/plain 表示响应体是纯文本
+        // - Content-Length: 响应体的字节长度
+        response = "HTTP/1.1 200 OK\r\n";
+        response += "Content-Type: text/plain\r\n";
+        response += "Content-Length: " + std::to_string(echo_str.size()) + "\r\n";
+        response += "\r\n";  // 头部结束
+        response += echo_str;  // 响应体
+    }
+    else if (path == "/user-agent")
+    {
+        // 从请求头中提取 User-Agent 的值
+        // 请求头格式: "User-Agent: value\r\n"
+        // 注意: 头名称不区分大小写
+        std::string user_agent;
+        std::string ua_header = "User-Agent: ";
+        size_t ua_pos = request.find(ua_header);
+        if (ua_pos != std::string::npos)
+        {
+            size_t value_start = ua_pos + ua_header.size();
+            size_t value_end = request.find("\r\n", value_start);
+            if (value_end != std::string::npos)
+            {
+                user_agent = request.substr(value_start, value_end - value_start);
+            }
+        }
+        // 构建响应
+        response = "HTTP/1.1 200 OK\r\n";
+        response += "Content-Type: text/plain\r\n";
+        response += "Content-Length: " + std::to_string(user_agent.size()) + "\r\n";
+        response += "\r\n";
+        response += user_agent;
+    }
+    else
+    {
+        response = "HTTP/1.1 404 Not Found\r\n\r\n";
+    }
+    send(client_fd, response.c_str(), response.size(), 0);
+
+    // 关闭客户端套接字
+    close(client_fd);
+}
 
 int main(int argc, char **argv)
 {
@@ -80,6 +172,7 @@ int main(int argc, char **argv)
     std::cout << "Waiting for a client to connect...\n";
 
     // 使用循环处理多个客户端连接
+    // 通过多线程实现并发处理，每个客户端连接在独立线程中处理
     while (true)
     {
         // accept() 阻塞等待客户端连接
@@ -94,91 +187,11 @@ int main(int argc, char **argv)
         }
         std::cout << "Client connected\n";
 
-        // ==================== 第七步：读取并解析 HTTP 请求 ====================
-        // HTTP 请求由三部分组成，每部分以 CRLF (\r\n) 分隔：
-        // 1. 请求行 (Request line): 方法 + 请求目标(URL路径) + HTTP版本
-        // 2. 请求头 (Headers): 零个或多个，每个以 CRLF 结尾
-        // 3. 请求体 (Body): 可选的请求内容
-        //
-        // 示例: "GET /index.html HTTP/1.1\r\nHost: localhost:4221\r\n\r\n"
-        char buffer[1024] = {0};
-        recv(client_fd, buffer, sizeof(buffer) - 1, 0);
-        std::string request(buffer);
-        std::cout << "Received request:\n" << request << std::endl;
-
-        // 解析请求行，提取 URL 路径
-        // 请求行格式: "METHOD /path HTTP/1.1"
-        // 找到第一个空格后的位置就是路径开始
-        // 找到第二个空格的位置就是路径结束
-        std::string path;
-        size_t method_end = request.find(' ');
-        if (method_end != std::string::npos)
-        {
-            size_t path_end = request.find(' ', method_end + 1);
-            if (path_end != std::string::npos)
-            {
-                path = request.substr(method_end + 1, path_end - method_end - 1);
-            }
-        }
-        std::cout << "Extracted path: " << path << std::endl;
-
-        // ==================== 第八步：发送 HTTP 响应 ====================
-        // 根据请求路径返回不同的响应：
-        // - 路径为 "/" 时返回 200 OK
-        // - 路径以 "/echo/" 开头时返回 200 OK，响应体为路径中的字符串
-        // - 路径为 "/user-agent" 时返回 200 OK，响应体为 User-Agent 头的值
-        // - 其他路径返回 404 Not Found
-        std::string response;
-        if (path == "/")
-        {
-            response = "HTTP/1.1 200 OK\r\n\r\n";
-        }
-        else if (path.substr(0, 6) == "/echo/")
-        {
-            // 提取 /echo/ 后面的字符串作为响应体
-            // 例如: /echo/abc -> abc
-            std::string echo_str = path.substr(6);
-            // 构建响应:
-            // - Content-Type: text/plain 表示响应体是纯文本
-            // - Content-Length: 响应体的字节长度
-            response = "HTTP/1.1 200 OK\r\n";
-            response += "Content-Type: text/plain\r\n";
-            response += "Content-Length: " + std::to_string(echo_str.size()) + "\r\n";
-            response += "\r\n";  // 头部结束
-            response += echo_str;  // 响应体
-        }
-        else if (path == "/user-agent")
-        {
-            // 从请求头中提取 User-Agent 的值
-            // 请求头格式: "User-Agent: value\r\n"
-            // 注意: 头名称不区分大小写
-            std::string user_agent;
-            std::string ua_header = "User-Agent: ";
-            size_t ua_pos = request.find(ua_header);
-            if (ua_pos != std::string::npos)
-            {
-                size_t value_start = ua_pos + ua_header.size();
-                size_t value_end = request.find("\r\n", value_start);
-                if (value_end != std::string::npos)
-                {
-                    user_agent = request.substr(value_start, value_end - value_start);
-                }
-            }
-            // 构建响应
-            response = "HTTP/1.1 200 OK\r\n";
-            response += "Content-Type: text/plain\r\n";
-            response += "Content-Length: " + std::to_string(user_agent.size()) + "\r\n";
-            response += "\r\n";
-            response += user_agent;
-        }
-        else
-        {
-            response = "HTTP/1.1 404 Not Found\r\n\r\n";
-        }
-        send(client_fd, response.c_str(), response.size(), 0);
-
-        // ==================== 第九步：关闭客户端套接字 ====================
-        close(client_fd);
+        // 创建新线程处理客户端请求
+        // 使用 detach() 让线程独立运行，主线程继续接受新连接
+        // 这样可以同时处理多个并发连接
+        std::thread client_thread(handle_client, client_fd);
+        client_thread.detach();
     }
 
     // 关闭服务器监听套接字，释放资源
