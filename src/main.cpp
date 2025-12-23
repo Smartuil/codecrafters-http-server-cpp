@@ -62,207 +62,244 @@ std::string gzip_compress(const std::string& data)
 
 // 处理单个客户端连接的函数
 // 将其抽取为独立函数，以便在新线程中执行
+// HTTP/1.1 默认使用持久连接，同一连接可以处理多个请求
 void handle_client(int client_fd)
 {
-    // ==================== 读取并解析 HTTP 请求 ====================
-    // HTTP 请求由三部分组成，每部分以 CRLF (\r\n) 分隔：
-    // 1. 请求行 (Request line): 方法 + 请求目标(URL路径) + HTTP版本
-    // 2. 请求头 (Headers): 零个或多个，每个以 CRLF 结尾
-    // 3. 请求体 (Body): 可选的请求内容
-    //
-    // 示例: "GET /index.html HTTP/1.1\r\nHost: localhost:4221\r\n\r\n"
-    char buffer[1024] = {0};
-    recv(client_fd, buffer, sizeof(buffer) - 1, 0);
-    std::string request(buffer);
-    std::cout << "Received request:\n" << request << std::endl;
-
-    // 解析请求行，提取 HTTP 方法和 URL 路径
-    // 请求行格式: "METHOD /path HTTP/1.1"
-    // 找到第一个空格后的位置就是路径开始
-    // 找到第二个空格的位置就是路径结束
-    std::string method;
-    std::string path;
-    size_t method_end = request.find(' ');
-    if (method_end != std::string::npos)
+    // 持久连接循环：持续处理同一连接上的多个请求
+    while (true)
     {
-        method = request.substr(0, method_end);
-        size_t path_end = request.find(' ', method_end + 1);
-        if (path_end != std::string::npos)
-        {
-            path = request.substr(method_end + 1, path_end - method_end - 1);
-        }
-    }
-    std::cout << "Method: " << method << ", Path: " << path << std::endl;
-
-    // ==================== 发送 HTTP 响应 ====================
-    // 根据请求路径返回不同的响应：
-    // - 路径为 "/" 时返回 200 OK
-    // - 路径以 "/echo/" 开头时返回 200 OK，响应体为路径中的字符串
-    // - 路径为 "/user-agent" 时返回 200 OK，响应体为 User-Agent 头的值
-    // - 其他路径返回 404 Not Found
-    std::string response;
-    if (path == "/")
-    {
-        response = "HTTP/1.1 200 OK\r\n\r\n";
-    }
-    else if (path.substr(0, 6) == "/echo/")
-    {
-        // 提取 /echo/ 后面的字符串作为响应体
-        // 例如: /echo/abc -> abc
-        std::string echo_str = path.substr(6);
+        // ==================== 读取并解析 HTTP 请求 ====================
+        // HTTP 请求由三部分组成，每部分以 CRLF (\r\n) 分隔：
+        // 1. 请求行 (Request line): 方法 + 请求目标(URL路径) + HTTP版本
+        // 2. 请求头 (Headers): 零个或多个，每个以 CRLF 结尾
+        // 3. 请求体 (Body): 可选的请求内容
+        //
+        // 示例: "GET /index.html HTTP/1.1\r\nHost: localhost:4221\r\n\r\n"
+        char buffer[1024] = {0};
+        ssize_t bytes_received = recv(client_fd, buffer, sizeof(buffer) - 1, 0);
         
-        // 检查 Accept-Encoding 头，判断客户端是否支持 gzip 压缩
-        // Accept-Encoding 头格式: "Accept-Encoding: gzip" 或 "Accept-Encoding: gzip, deflate"
-        bool supports_gzip = false;
-        std::string ae_header = "Accept-Encoding: ";
-        size_t ae_pos = request.find(ae_header);
-        if (ae_pos != std::string::npos)
+        // 如果 recv 返回 0 或负数，表示连接已关闭或出错
+        if (bytes_received <= 0)
         {
-            size_t value_start = ae_pos + ae_header.size();
+            break;
+        }
+        
+        std::string request(buffer, bytes_received);
+        std::cout << "Received request:\n" << request << std::endl;
+
+        // 解析请求行，提取 HTTP 方法和 URL 路径
+        // 请求行格式: "METHOD /path HTTP/1.1"
+        // 找到第一个空格后的位置就是路径开始
+        // 找到第二个空格的位置就是路径结束
+        std::string method;
+        std::string path;
+        size_t method_end = request.find(' ');
+        if (method_end != std::string::npos)
+        {
+            method = request.substr(0, method_end);
+            size_t path_end = request.find(' ', method_end + 1);
+            if (path_end != std::string::npos)
+            {
+                path = request.substr(method_end + 1, path_end - method_end - 1);
+            }
+        }
+        std::cout << "Method: " << method << ", Path: " << path << std::endl;
+        
+        // 检查 Connection 头，判断是否需要关闭连接
+        // HTTP/1.1 默认保持连接，除非客户端发送 Connection: close
+        bool should_close = false;
+        std::string conn_header = "Connection: ";
+        size_t conn_pos = request.find(conn_header);
+        if (conn_pos != std::string::npos)
+        {
+            size_t value_start = conn_pos + conn_header.size();
             size_t value_end = request.find("\r\n", value_start);
             if (value_end != std::string::npos)
             {
-                std::string encoding = request.substr(value_start, value_end - value_start);
-                // 检查是否包含 "gzip"
-                if (encoding.find("gzip") != std::string::npos)
+                std::string conn_value = request.substr(value_start, value_end - value_start);
+                if (conn_value == "close")
                 {
-                    supports_gzip = true;
+                    should_close = true;
                 }
             }
         }
-        
-        // 构建响应:
-        // - Content-Type: text/plain 表示响应体是纯文本
-        // - Content-Encoding: gzip 如果客户端支持 gzip 压缩
-        // - Content-Length: 响应体的字节长度（压缩后）
-        std::string body;
-        if (supports_gzip)
+
+        // ==================== 发送 HTTP 响应 ====================
+        // 根据请求路径返回不同的响应：
+        // - 路径为 "/" 时返回 200 OK
+        // - 路径以 "/echo/" 开头时返回 200 OK，响应体为路径中的字符串
+        // - 路径为 "/user-agent" 时返回 200 OK，响应体为 User-Agent 头的值
+        // - 其他路径返回 404 Not Found
+        std::string response;
+        if (path == "/")
         {
-            body = gzip_compress(echo_str);
+            response = "HTTP/1.1 200 OK\r\n\r\n";
         }
-        else
+        else if (path.substr(0, 6) == "/echo/")
         {
-            body = echo_str;
-        }
-        
-        response = "HTTP/1.1 200 OK\r\n";
-        response += "Content-Type: text/plain\r\n";
-        if (supports_gzip)
-        {
-            response += "Content-Encoding: gzip\r\n";
-        }
-        response += "Content-Length: " + std::to_string(body.size()) + "\r\n";
-        response += "\r\n";  // 头部结束
-        response += body;    // 响应体（可能是压缩后的二进制数据）
-    }
-    else if (path == "/user-agent")
-    {
-        // 从请求头中提取 User-Agent 的值
-        // 请求头格式: "User-Agent: value\r\n"
-        // 注意: 头名称不区分大小写
-        std::string user_agent;
-        std::string ua_header = "User-Agent: ";
-        size_t ua_pos = request.find(ua_header);
-        if (ua_pos != std::string::npos)
-        {
-            size_t value_start = ua_pos + ua_header.size();
-            size_t value_end = request.find("\r\n", value_start);
-            if (value_end != std::string::npos)
+            // 提取 /echo/ 后面的字符串作为响应体
+            // 例如: /echo/abc -> abc
+            std::string echo_str = path.substr(6);
+            
+            // 检查 Accept-Encoding 头，判断客户端是否支持 gzip 压缩
+            // Accept-Encoding 头格式: "Accept-Encoding: gzip" 或 "Accept-Encoding: gzip, deflate"
+            bool supports_gzip = false;
+            std::string ae_header = "Accept-Encoding: ";
+            size_t ae_pos = request.find(ae_header);
+            if (ae_pos != std::string::npos)
             {
-                user_agent = request.substr(value_start, value_end - value_start);
-            }
-        }
-        // 构建响应
-        response = "HTTP/1.1 200 OK\r\n";
-        response += "Content-Type: text/plain\r\n";
-        response += "Content-Length: " + std::to_string(user_agent.size()) + "\r\n";
-        response += "\r\n";
-        response += user_agent;
-    }
-    else if (path.substr(0, 7) == "/files/")
-    {
-        // 处理文件请求: /files/{filename}
-        // 从路径中提取文件名
-        std::string filename = path.substr(7);
-        // 构建完整的文件路径
-        std::string filepath = g_directory + filename;
-        
-        if (method == "GET")
-        {
-            // GET 请求：读取文件并返回内容
-            std::ifstream file(filepath, std::ios::binary);
-            if (file.is_open())
-            {
-                // 文件存在，读取文件内容
-                std::stringstream file_buffer;
-                file_buffer << file.rdbuf();
-                std::string file_content = file_buffer.str();
-                file.close();
-                
-                // 构建 200 响应
-                // Content-Type: application/octet-stream 表示二进制文件
-                response = "HTTP/1.1 200 OK\r\n";
-                response += "Content-Type: application/octet-stream\r\n";
-                response += "Content-Length: " + std::to_string(file_content.size()) + "\r\n";
-                response += "\r\n";
-                response += file_content;
-            }
-            else
-            {
-                // 文件不存在，返回 404
-                response = "HTTP/1.1 404 Not Found\r\n\r\n";
-            }
-        }
-        else if (method == "POST")
-        {
-            // POST 请求：将请求体内容写入文件
-            // 从请求头中提取 Content-Length
-            std::string content_length_header = "Content-Length: ";
-            size_t cl_pos = request.find(content_length_header);
-            int content_length = 0;
-            if (cl_pos != std::string::npos)
-            {
-                size_t value_start = cl_pos + content_length_header.size();
+                size_t value_start = ae_pos + ae_header.size();
                 size_t value_end = request.find("\r\n", value_start);
                 if (value_end != std::string::npos)
                 {
-                    content_length = std::stoi(request.substr(value_start, value_end - value_start));
+                    std::string encoding = request.substr(value_start, value_end - value_start);
+                    // 检查是否包含 "gzip"
+                    if (encoding.find("gzip") != std::string::npos)
+                    {
+                        supports_gzip = true;
+                    }
                 }
             }
             
-            // 提取请求体（在 \r\n\r\n 之后的内容）
+            // 构建响应:
+            // - Content-Type: text/plain 表示响应体是纯文本
+            // - Content-Encoding: gzip 如果客户端支持 gzip 压缩
+            // - Content-Length: 响应体的字节长度（压缩后）
             std::string body;
-            size_t body_start = request.find("\r\n\r\n");
-            if (body_start != std::string::npos)
+            if (supports_gzip)
             {
-                body = request.substr(body_start + 4, content_length);
-            }
-            
-            // 将请求体写入文件
-            std::ofstream file(filepath, std::ios::binary);
-            if (file.is_open())
-            {
-                file << body;
-                file.close();
-                // 返回 201 Created 响应
-                response = "HTTP/1.1 201 Created\r\n\r\n";
+                body = gzip_compress(echo_str);
             }
             else
             {
-                // 无法创建文件，返回 500 错误
-                response = "HTTP/1.1 500 Internal Server Error\r\n\r\n";
+                body = echo_str;
+            }
+            
+            response = "HTTP/1.1 200 OK\r\n";
+            response += "Content-Type: text/plain\r\n";
+            if (supports_gzip)
+            {
+                response += "Content-Encoding: gzip\r\n";
+            }
+            response += "Content-Length: " + std::to_string(body.size()) + "\r\n";
+            response += "\r\n";  // 头部结束
+            response += body;    // 响应体（可能是压缩后的二进制数据）
+        }
+        else if (path == "/user-agent")
+        {
+            // 从请求头中提取 User-Agent 的值
+            // 请求头格式: "User-Agent: value\r\n"
+            // 注意: 头名称不区分大小写
+            std::string user_agent;
+            std::string ua_header = "User-Agent: ";
+            size_t ua_pos = request.find(ua_header);
+            if (ua_pos != std::string::npos)
+            {
+                size_t value_start = ua_pos + ua_header.size();
+                size_t value_end = request.find("\r\n", value_start);
+                if (value_end != std::string::npos)
+                {
+                    user_agent = request.substr(value_start, value_end - value_start);
+                }
+            }
+            // 构建响应
+            response = "HTTP/1.1 200 OK\r\n";
+            response += "Content-Type: text/plain\r\n";
+            response += "Content-Length: " + std::to_string(user_agent.size()) + "\r\n";
+            response += "\r\n";
+            response += user_agent;
+        }
+        else if (path.substr(0, 7) == "/files/")
+        {
+            // 处理文件请求: /files/{filename}
+            // 从路径中提取文件名
+            std::string filename = path.substr(7);
+            // 构建完整的文件路径
+            std::string filepath = g_directory + filename;
+            
+            if (method == "GET")
+            {
+                // GET 请求：读取文件并返回内容
+                std::ifstream file(filepath, std::ios::binary);
+                if (file.is_open())
+                {
+                    // 文件存在，读取文件内容
+                    std::stringstream file_buffer;
+                    file_buffer << file.rdbuf();
+                    std::string file_content = file_buffer.str();
+                    file.close();
+                    
+                    // 构建 200 响应
+                    // Content-Type: application/octet-stream 表示二进制文件
+                    response = "HTTP/1.1 200 OK\r\n";
+                    response += "Content-Type: application/octet-stream\r\n";
+                    response += "Content-Length: " + std::to_string(file_content.size()) + "\r\n";
+                    response += "\r\n";
+                    response += file_content;
+                }
+                else
+                {
+                    // 文件不存在，返回 404
+                    response = "HTTP/1.1 404 Not Found\r\n\r\n";
+                }
+            }
+            else if (method == "POST")
+            {
+                // POST 请求：将请求体内容写入文件
+                // 从请求头中提取 Content-Length
+                std::string content_length_header = "Content-Length: ";
+                size_t cl_pos = request.find(content_length_header);
+                int content_length = 0;
+                if (cl_pos != std::string::npos)
+                {
+                    size_t value_start = cl_pos + content_length_header.size();
+                    size_t value_end = request.find("\r\n", value_start);
+                    if (value_end != std::string::npos)
+                    {
+                        content_length = std::stoi(request.substr(value_start, value_end - value_start));
+                    }
+                }
+                
+                // 提取请求体（在 \r\n\r\n 之后的内容）
+                std::string body;
+                size_t body_start = request.find("\r\n\r\n");
+                if (body_start != std::string::npos)
+                {
+                    body = request.substr(body_start + 4, content_length);
+                }
+                
+                // 将请求体写入文件
+                std::ofstream file(filepath, std::ios::binary);
+                if (file.is_open())
+                {
+                    file << body;
+                    file.close();
+                    // 返回 201 Created 响应
+                    response = "HTTP/1.1 201 Created\r\n\r\n";
+                }
+                else
+                {
+                    // 无法创建文件，返回 500 错误
+                    response = "HTTP/1.1 500 Internal Server Error\r\n\r\n";
+                }
+            }
+            else
+            {
+                response = "HTTP/1.1 405 Method Not Allowed\r\n\r\n";
             }
         }
         else
         {
-            response = "HTTP/1.1 405 Method Not Allowed\r\n\r\n";
+            response = "HTTP/1.1 404 Not Found\r\n\r\n";
+        }
+        send(client_fd, response.c_str(), response.size(), 0);
+        
+        // 如果客户端请求关闭连接，则退出循环
+        if (should_close)
+        {
+            break;
         }
     }
-    else
-    {
-        response = "HTTP/1.1 404 Not Found\r\n\r\n";
-    }
-    send(client_fd, response.c_str(), response.size(), 0);
 
     // 关闭客户端套接字
     close(client_fd);
