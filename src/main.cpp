@@ -10,9 +10,55 @@
 #include <thread>    // 用于多线程支持
 #include <fstream>   // 用于文件操作
 #include <sstream>   // 用于字符串流
+#include <zlib.h>    // 用于 gzip 压缩
 
 // 全局变量：存储文件目录路径
 std::string g_directory;
+
+// gzip 压缩函数
+// 使用 zlib 库将输入字符串压缩为 gzip 格式
+std::string gzip_compress(const std::string& data)
+{
+    z_stream zs;
+    memset(&zs, 0, sizeof(zs));
+    
+    // 初始化 deflate，使用 gzip 格式 (windowBits = 15 + 16)
+    // 15 是默认窗口大小，+16 表示使用 gzip 格式而非 zlib 格式
+    if (deflateInit2(&zs, Z_DEFAULT_COMPRESSION, Z_DEFLATED, 15 + 16, 8, Z_DEFAULT_STRATEGY) != Z_OK)
+    {
+        return "";
+    }
+    
+    zs.next_in = (Bytef*)data.data();
+    zs.avail_in = data.size();
+    
+    std::string compressed;
+    char buffer[32768];
+    
+    // 循环压缩直到所有数据处理完毕
+    int ret;
+    do
+    {
+        zs.next_out = reinterpret_cast<Bytef*>(buffer);
+        zs.avail_out = sizeof(buffer);
+        
+        ret = deflate(&zs, Z_FINISH);
+        
+        if (compressed.size() < zs.total_out)
+        {
+            compressed.append(buffer, zs.total_out - compressed.size());
+        }
+    } while (ret == Z_OK);
+    
+    deflateEnd(&zs);
+    
+    if (ret != Z_STREAM_END)
+    {
+        return "";
+    }
+    
+    return compressed;
+}
 
 // 处理单个客户端连接的函数
 // 将其抽取为独立函数，以便在新线程中执行
@@ -88,16 +134,26 @@ void handle_client(int client_fd)
         // 构建响应:
         // - Content-Type: text/plain 表示响应体是纯文本
         // - Content-Encoding: gzip 如果客户端支持 gzip 压缩
-        // - Content-Length: 响应体的字节长度
+        // - Content-Length: 响应体的字节长度（压缩后）
+        std::string body;
+        if (supports_gzip)
+        {
+            body = gzip_compress(echo_str);
+        }
+        else
+        {
+            body = echo_str;
+        }
+        
         response = "HTTP/1.1 200 OK\r\n";
         response += "Content-Type: text/plain\r\n";
         if (supports_gzip)
         {
             response += "Content-Encoding: gzip\r\n";
         }
-        response += "Content-Length: " + std::to_string(echo_str.size()) + "\r\n";
+        response += "Content-Length: " + std::to_string(body.size()) + "\r\n";
         response += "\r\n";  // 头部结束
-        response += echo_str;  // 响应体
+        response += body;    // 响应体（可能是压缩后的二进制数据）
     }
     else if (path == "/user-agent")
     {
