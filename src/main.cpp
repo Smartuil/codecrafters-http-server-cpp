@@ -292,6 +292,18 @@ void handle_client(int client_fd)
         {
             response = "HTTP/1.1 404 Not Found\r\n\r\n";
         }
+        
+        // 如果需要关闭连接，在响应头中添加 Connection: close
+        if (should_close)
+        {
+            // 找到 \r\n\r\n 的位置，在其前面插入 Connection: close 头
+            size_t header_end = response.find("\r\n\r\n");
+            if (header_end != std::string::npos)
+            {
+                response.insert(header_end, "\r\nConnection: close");
+            }
+        }
+        
         send(client_fd, response.c_str(), response.size(), 0);
         
         // 如果客户端请求关闭连接，则退出循环
