@@ -64,11 +64,37 @@ void handle_client(int client_fd)
         // 提取 /echo/ 后面的字符串作为响应体
         // 例如: /echo/abc -> abc
         std::string echo_str = path.substr(6);
+        
+        // 检查 Accept-Encoding 头，判断客户端是否支持 gzip 压缩
+        // Accept-Encoding 头格式: "Accept-Encoding: gzip" 或 "Accept-Encoding: gzip, deflate"
+        bool supports_gzip = false;
+        std::string ae_header = "Accept-Encoding: ";
+        size_t ae_pos = request.find(ae_header);
+        if (ae_pos != std::string::npos)
+        {
+            size_t value_start = ae_pos + ae_header.size();
+            size_t value_end = request.find("\r\n", value_start);
+            if (value_end != std::string::npos)
+            {
+                std::string encoding = request.substr(value_start, value_end - value_start);
+                // 检查是否包含 "gzip"
+                if (encoding.find("gzip") != std::string::npos)
+                {
+                    supports_gzip = true;
+                }
+            }
+        }
+        
         // 构建响应:
         // - Content-Type: text/plain 表示响应体是纯文本
+        // - Content-Encoding: gzip 如果客户端支持 gzip 压缩
         // - Content-Length: 响应体的字节长度
         response = "HTTP/1.1 200 OK\r\n";
         response += "Content-Type: text/plain\r\n";
+        if (supports_gzip)
+        {
+            response += "Content-Encoding: gzip\r\n";
+        }
         response += "Content-Length: " + std::to_string(echo_str.size()) + "\r\n";
         response += "\r\n";  // 头部结束
         response += echo_str;  // 响应体
